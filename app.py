@@ -165,7 +165,6 @@ uploaded_file = st.file_uploader("Choose a graph image...", type=["png", "jpg", 
 if uploaded_file is not None:
     st.image(uploaded_file, caption="Uploaded Graph", use_column_width=True)
     st.write("")
-    st.info("Analyzing... Please wait.")
 
     analyzed_img_bgr, trend_direction = analyze_graph_trend_enhanced(uploaded_file)
     
@@ -185,4 +184,5 @@ if uploaded_file is not None:
         st.image(analyzed_img_rgb, caption="Analyzed Graph with Trend Indicator", use_column_width=True)
     else:
         st.error(trend_direction)
+
 
