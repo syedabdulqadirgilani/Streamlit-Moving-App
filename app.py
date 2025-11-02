@@ -3,111 +3,114 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# Page
-st.title("Object Movement Direction Detector")
-st.write("Upload one image (brightness heuristic) or two images (optical flow) to detect up/down movement.")
+def analyze_graph_trend(image_path_or_bytes):
+    """
+    Analyzes a graph image to determine if the last part is trending up or down.
+    Returns the analyzed image and the trend direction string.
+    """
+    # Load image
+    if isinstance(image_path_or_bytes, str):
+        img = cv2.imread(image_path_or_bytes)
+    else: # Assuming bytes from Streamlit uploader
+        file_bytes = np.asarray(bytearray(image_path_or_bytes.read()), dtype=np.uint8)
+        img = cv2.imdecode(file_bytes, 1)
 
-# Sidebar controls
-st.sidebar.header("Detection settings")
-brightness_threshold = st.sidebar.slider("Brightness difference threshold", 0.0, 50.0, 5.0, step=0.5)
-flow_threshold = st.sidebar.slider("Optical flow mean-y threshold", 0.0, 20.0, 1.0, step=0.1)
-show_debug = st.sidebar.checkbox("Show debug images (halves / flow values)", value=True)
+    if img is None:
+        return None, "Error: Could not load image."
 
-# File uploader: allow multiple files (1 or 2 images)
-uploaded_files = st.file_uploader("Choose image(s)", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
+    original_img = img.copy()
+    
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # Apply thresholding to get a binary image (isolate the graph line)
+    # Adjust these values based on typical graph line colors and background
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV) 
 
-def pil_to_rgb_array(pil_img):
-    img = pil_img.convert('RGB')
-    return np.array(img)
+    # Find contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Assuming the largest contour is our main graph line
+    if not contours:
+        return original_img, "No clear graph line detected."
+        
+    main_contour = max(contours, key=cv2.contourArea)
 
-def resize_to(img, shape):
-    return cv2.resize(img, (shape[1], shape[0]))
+    # Get points of the contour
+    points = [p[0] for p in main_contour]
+    
+    # Sort points by X-coordinate to represent left-to-right progression
+    points.sort(key=lambda p: p[0])
 
-if uploaded_files and len(uploaded_files) >= 1:
-    try:
-        # If one image uploaded -> brightness heuristic
-        if len(uploaded_files) == 1:
-            image = Image.open(uploaded_files[0])
-            image_np = pil_to_rgb_array(image)
+    if len(points) < 2:
+        return original_img, "Not enough points to determine trend."
 
-            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            h, w = blurred.shape
-            top_half = blurred[:h//2, :]
-            bottom_half = blurred[h//2:, :]
+    # Focus on the last N% of the graph for trend analysis
+    # You can adjust this percentage (e.g., 0.1 for 10%, 0.2 for 20%)
+    percentage_for_trend = 0.15 # Analyze the last 15% of the graph
+    start_index = int(len(points) * (1 - percentage_for_trend))
+    
+    if start_index >= len(points) - 1: # Ensure there are at least two points for a segment
+        start_index = len(points) - 2
+        if start_index < 0:
+            return original_img, "Not enough data points in the last segment."
 
-            top_avg = float(np.mean(top_half))
-            bottom_avg = float(np.mean(bottom_half))
-            diff = abs(top_avg - bottom_avg)
+    trend_points = points[start_index:]
 
-            st.image(image_np, caption='Uploaded Image', use_container_width=True)
+    # Find the leftmost and rightmost points in the trend_points segment
+    x_min_trend, y_at_x_min_trend = trend_points[0][0], trend_points[0][1]
+    x_max_trend, y_at_x_max_trend = trend_points[-1][0], trend_points[-1][1]
 
-            if diff > brightness_threshold:
-                if top_avg > bottom_avg:
-                    st.success("The object appears to be moving UP (brightness heuristic).")
-                    st.write("Top half is brighter than bottom half.")
-                else:
-                    st.success("The object appears to be moving DOWN (brightness heuristic).")
-                    st.write("Bottom half is brighter than top half.")
-            else:
-                st.info("Cannot determine clear movement direction from brightness.")
-                st.write("Brightness difference not significant for the chosen threshold.")
+    # Calculate slope (y-axis is inverted in images: lower y-value is higher on screen)
+    # A negative change in y_coordinate (y_at_x_max_trend - y_at_x_min_trend) means the line went up.
+    # A positive change in y_coordinate means the line went down.
+    
+    y_diff = y_at_x_max_trend - y_at_x_min_trend
+    x_diff = x_max_trend - x_min_trend
 
-            with st.expander("Show Technical Details"):
-                st.write(f"Top half avg: {top_avg:.2f}")
-                st.write(f"Bottom half avg: {bottom_avg:.2f}")
-                st.write(f"Brightness diff: {diff:.2f}")
-                if show_debug:
-                    st.image(np.stack([top_half, bottom_half], axis=2), caption='Top (L) and Bottom (R) halves (as grayscale stacked)', use_column_width=True)
-
+    trend = "Undetermined"
+    if x_diff > 0: # Ensure there's horizontal movement
+        if y_diff < -5: # Graph went up (y-coordinate decreased)
+            trend = "Upward Trend"
+        elif y_diff > 5: # Graph went down (y-coordinate increased)
+            trend = "Downward Trend"
         else:
-            # Two images uploaded -> use optical flow
-            img1 = Image.open(uploaded_files[0])
-            img2 = Image.open(uploaded_files[1])
-            img1_np = pil_to_rgb_array(img1)
-            img2_np = pil_to_rgb_array(img2)
-
-            # Resize second to first if needed
-            if img1_np.shape[:2] != img2_np.shape[:2]:
-                img2_np = resize_to(img2_np, img1_np.shape[:2])
-
-            prev = cv2.cvtColor(img1_np, cv2.COLOR_RGB2GRAY)
-            next = cv2.cvtColor(img2_np, cv2.COLOR_RGB2GRAY)
-
-            # Farneback optical flow
-            flow = cv2.calcOpticalFlowFarneback(prev, next, None,
-                                                pyr_scale=0.5, levels=3, winsize=15,
-                                                iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
-
-            mean_flow_y = float(np.mean(flow[..., 1]))
-            mean_flow_x = float(np.mean(flow[..., 0]))
-
-            st.image([img1_np, img2_np], caption=['Frame 1', 'Frame 2'], width=300)
-
-            # In OpenCV coordinates positive y means movement downward
-            if abs(mean_flow_y) > flow_threshold:
-                if mean_flow_y < 0:
-                    st.success("Detected movement UP (optical flow).")
-                    st.write("Average vertical flow is negative (upwards).")
-                else:
-                    st.success("Detected movement DOWN (optical flow).")
-                    st.write("Average vertical flow is positive (downwards).")
-            else:
-                st.info("Cannot determine clear movement direction from optical flow.")
-                st.write("Average vertical flow magnitude below threshold.")
-
-            with st.expander("Show Optical Flow Details"):
-                st.write(f"Mean flow Y: {mean_flow_y:.3f}")
-                st.write(f"Mean flow X: {mean_flow_x:.3f}")
-
-                if show_debug:
-                    # visualise flow magnitude (grayscale)
-                    mag, ang = cv2.cartToPolar(flow[...,0], flow[...,1])
-                    mag_norm = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-                    st.image(mag_norm, caption='Optical flow magnitude (normalized)', use_column_width=True)
-                        except Exception as e:
-        st.error(f"Processing uploaded file(s): {e}")
-else:
-    st.info("Please upload 1 image (brightness heuristic) or 2 images (optical flow) to get started.")
+            trend = "Relatively Flat"
+    else:
+        trend = "Insufficient horizontal movement in last segment."
 
 
+    # Draw the trend line and arrow on the original image
+    if x_diff > 0: # Only draw if there's horizontal movement for trend
+        # Define line start and end for visualization based on the trend segment
+        start_point_viz = (x_min_trend, y_at_x_min_trend)
+        end_point_viz = (x_max_trend, y_at_x_max_trend)
+
+        color = (0, 255, 0) if "Upward" in trend else ((0, 0, 255) if "Downward" in trend else (255, 255, 0)) # Green for up, Red for down, Yellow for flat
+        cv2.arrowedLine(original_img, start_point_viz, end_point_viz, color, 3, tipLength=0.5)
+
+    return original_img, trend
+
+
+# Streamlit app layout
+st.title("Graph Trend Analyzer")
+st.write("Upload a screenshot of a graph to determine if its last part is trending upward or downward.")
+
+uploaded_file = st.file_uploader("Choose a graph image...", type=["png", "jpg", "jpeg"])
+
+if uploaded_file is not None:
+    st.image(uploaded_file, caption="Uploaded Graph", use_column_width=True)
+    st.write("")
+    st.write("Analyzing...")
+
+    analyzed_img, trend_direction = analyze_graph_trend(uploaded_file)
+    
+    if analyzed_img is not None:
+        st.subheader("Analysis Result:")
+        st.write(f"The last part of the graph shows an: **{trend_direction}**")
+        
+        # Convert OpenCV image (BGR) to RGB for Streamlit display
+        analyzed_img_rgb = cv2.cvtColor(analyzed_img, cv2.COLOR_BGR2RGB)
+        st.image(analyzed_img_rgb, caption="Analyzed Graph with Trend Indicator", use_column_width=True)
+    else:
+        st.error(trend_direction)
