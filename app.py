@@ -106,7 +106,3 @@ if uploaded_files and len(uploaded_files) >= 1:
                     mag_norm = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
                     st.image(mag_norm, caption='Optical flow magnitude (normalized)', use_column_width=True)
 
-    except Exception as e:
-        st.error(f"Error processing uploaded file(s): {e}")
-else:
-    st.info("Please upload 1 image (brightness heuristic) or 2 images (optical flow) to get started.")
